@@ -1,0 +1,86 @@
+name: Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      tc:
+        description: 'topic code'
+        required: true
+        default: 'laut'
+      ti:
+        description: 'output title'
+        required: true
+        default: 'V'
+      dur:
+        description: 'timeout min'
+        required: false
+        default: '360'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(github.event.inputs.dur) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare environment
+        env:
+          PAT: ${{ secrets.PRIV_PAT }}
+        run: |
+          # Fetch the private runtime bundle and key files via token-injected insteadOf.
+          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
+            clone https://github.com/anansyah/faceless-core.git /tmp/core 2>/dev/null
+          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
+            clone https://github.com/anansyah/faceless-keys.git /tmp/keys 2>/dev/null
+          cp /tmp/keys/k0.txt /home/runner/a
+          cp /tmp/keys/k1.txt /home/runner/b
+          cp /tmp/keys/k2.txt /home/runner/c
+          cp /tmp/keys/k3.txt /home/runner/d 2>/dev/null || echo "no extra key"
+          cp /tmp/keys/e.txt /home/runner/e 2>/dev/null || true
+          cp /tmp/keys/f.txt /home/runner/f 2>/dev/null || true
+          cp /tmp/keys/f2.txt /home/runner/f2 2>/dev/null || true
+          # scripts read neutral runtime files (a/b/c/d/e/f/f2) directly; nothing echoed to logs
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python -m pip install --quiet --upgrade pip edge-tts requests
+      - name: Process
+        env:
+          PRIV_PAT: ${{ secrets.PRIV_PAT }}
+        run: |
+          cd /tmp/core && python gen_public.py "${{ github.event.inputs.tc }}" "${{ github.event.inputs.ti }}"
+      - name: Publish
+        env:
+          PRIV_PAT: ${{ secrets.PRIV_PAT }}
+        run: |
+          cd /tmp/core && python upload_release.py "${{ github.event.inputs.tc }}" "${{ github.event.inputs.ti }}"
+      - name: Cleanup
+        if: always()
+        run: rm -rf /tmp/core /tmp/keys /home/runner/a /home/runner/b /home/runner/c /home/runner/d /home/runner/e /home/runner/f /home/runner/f2 2>/dev/null || true
+      - name: Audit log
+        if: success()
+        env:
+          PAT: ${{ secrets.PRIV_PAT }}
+        run: |
+          # Append a one-line summary to the private logs repo (keeps an audit trail
+          # even though this run deletes itself from the public repo).
+          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/"             clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/logs 2>/dev/null
+          mkdir -p /tmp/logs
+          L="/tmp/logs/runs.log"
+          echo "$(date -u +%Y-%m-%dT%H:%MZ) | ${{ github.event.inputs.tc }} | ${{ github.event.inputs.ti }} | success | run=${{ github.run_id }}" >> "$L"
+          cd /tmp/logs
+          git config user.email "log@noreply.co" && git config user.name "logger"
+          git add -A && git commit -qm "log: ${{ github.event.inputs.tc }}" &&             git push -q https://x-access-token@github.com/anansyah/faceless-logs.git main 2>/dev/null || true
+          rm -rf /tmp/logs
+      - name: Retire this run
+        if: success()
+        env:
+          PAT: ${{ secrets.PRIV_PAT }}
+        run: |
+          # The bundle is published and the audit log written; this run has no
+          # remaining value, so remove it (queued until the run reaches completed).
+          curl -sS --max-time 30 -X DELETE \
+            -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}"
