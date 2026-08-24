@@ -70,6 +70,12 @@ jobs:
           mkdir -p /tmp/logs
           L="/tmp/logs/runs.log"
           echo "$(date -u +%Y-%m-%dT%H:%MZ) | ${{ github.event.inputs.tc }} | ${{ github.event.inputs.ti }} | success | run=${{ github.run_id }}" >> "$L"
+          # archive detailed telemetry (queries/scenes/stats) - survives workflow log deletion
+          REP=$(ls /home/runner/out/*/render_report.jsonl 2>/dev/null | head -1)
+          if [ -n "$REP" ]; then
+            mkdir -p /tmp/logs/logs
+            cp "$REP" "/tmp/logs/logs/${{ github.event.inputs.tc }}_${{ github.run_id }}.jsonl"
+          fi
           cd /tmp/logs
           git config user.email "log@noreply.co" && git config user.name "logger"
           git add -A && git commit -qm "log: ${{ github.event.inputs.tc }}" &&             git push -q https://${PAT}@github.com/anansyah/faceless-logs.git main 2>/dev/null || true
@@ -84,3 +90,4 @@ jobs:
           curl -sS --max-time 30 -X DELETE \
             -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
