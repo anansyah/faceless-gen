@@ -29,6 +29,12 @@ jobs:
           # Fetch the private runtime bundle and key files via token-injected insteadOf.
           GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
             clone https://github.com/anansyah/faceless-core.git /tmp/core 2>/dev/null
+          # fetch the recent clip-rotation registry so this run skips recently used clips
+          mkdir -p /tmp/core/registry
+          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
+            clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/regseed 2>/dev/null || true
+          if [ -d /tmp/regseed/registry ]; then cp /tmp/regseed/registry/*.json /tmp/core/registry/ 2>/dev/null || true; fi
+          rm -rf /tmp/regseed
           GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
             clone https://github.com/anansyah/faceless-keys.git /tmp/keys 2>/dev/null
           cp /tmp/keys/k0.txt /home/runner/a
@@ -75,6 +81,11 @@ jobs:
           if [ -n "$REP" ]; then
             mkdir -p /tmp/logs/logs
             cp "$REP" "/tmp/logs/logs/${{ github.event.inputs.tc }}_${{ github.run_id }}.jsonl"
+          fi
+          UC=$(ls /home/runner/out/*/used_clips.json 2>/dev/null | head -1)
+          if [ -n "$UC" ]; then
+            mkdir -p /tmp/logs/registry
+            cp "$UC" "/tmp/logs/registry/${{ github.event.inputs.tc }}_${{ github.run_id }}.json"
           fi
           cd /tmp/logs
           git config user.email "log@noreply.co" && git config user.name "logger"
