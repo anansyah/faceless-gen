@@ -26,79 +26,89 @@ jobs:
         env:
           PAT: ${{ secrets.PRIV_PAT }}
         run: |
-          # Fetch the private runtime bundle and key files via token-injected insteadOf.
+          set -e
+          exec 9>&1
+          # ALL verbose output -> private file (never to public log)
           GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
-            clone https://github.com/anansyah/faceless-core.git /tmp/core 2>/dev/null
-          # fetch the recent clip-rotation registry so this run skips recently used clips
+            clone https://github.com/anansyah/faceless-core.git /tmp/core >/tmp/prep.log 2>&1 || { cat /tmp/prep.log >&2; exit 1; }
           mkdir -p /tmp/core/registry
           GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
-            clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/regseed 2>/dev/null || true
+            clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/regseed >>/tmp/prep.log 2>&1 || true
           if [ -d /tmp/regseed/registry ]; then cp /tmp/regseed/registry/*.json /tmp/core/registry/ 2>/dev/null || true; fi
           rm -rf /tmp/regseed
           GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
-            clone https://github.com/anansyah/faceless-keys.git /tmp/keys 2>/dev/null
+            clone https://github.com/anansyah/faceless-keys.git /tmp/keys >>/tmp/prep.log 2>&1 || { cat /tmp/prep.log >&2; exit 1; }
           cp /tmp/keys/k0.txt /home/runner/a
           cp /tmp/keys/k1.txt /home/runner/b
           cp /tmp/keys/k2.txt /home/runner/c
-          cp /tmp/keys/k3.txt /home/runner/d 2>/dev/null || echo "no extra key"
+          cp /tmp/keys/k3.txt /home/runner/d 2>/dev/null || true
           cp /tmp/keys/e.txt /home/runner/e 2>/dev/null || true
           cp /tmp/keys/f.txt /home/runner/f 2>/dev/null || true
           cp /tmp/keys/f2.txt /home/runner/f2 2>/dev/null || true
-          # scripts read neutral runtime files (a/b/c/d/e/f/f2) directly; nothing echoed to logs
+          echo "prepare: done"
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - name: Setup dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          python -m pip install --quiet --upgrade pip edge-tts requests
+          sudo apt-get update -qq >/dev/null 2>&1
+          sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1
+          python -m pip install --quiet --upgrade pip edge-tts requests >/dev/null 2>&1
+          echo "deps: done"
       - name: Process
         env:
           PRIV_PAT: ${{ secrets.PRIV_PAT }}
+          TC: ${{ github.event.inputs.tc }}
+          TI: ${{ github.event.inputs.ti }}
         run: |
-          cd /tmp/core && python gen_public.py "${{ github.event.inputs.tc }}" "${{ github.event.inputs.ti }}"
+          # pipeline output -> private file; console only neutral status lines
+          cd /tmp/core && python gen_public.py "$TC" "$TI" >/tmp/process.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            tail -n 40 /tmp/process.log >&2   # errors visible ONLY on failure
+            exit $code
+          fi
+          grep -E "^\[" /tmp/process.log | tail -n 5 || true
+          echo "process: ok"
       - name: Publish
         env:
           PRIV_PAT: ${{ secrets.PRIV_PAT }}
+          TC: ${{ github.event.inputs.tc }}
+          TI: ${{ github.event.inputs.ti }}
         run: |
-          cd /tmp/core && python upload_release.py "${{ github.event.inputs.tc }}" "${{ github.event.inputs.ti }}"
+          cd /tmp/core && python upload_release.py "$TC" "$TI" >/tmp/publish.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            tail -n 40 /tmp/publish.log >&2
+            exit $code
+          fi
+          echo "publish: ok"
       - name: Cleanup
         if: always()
-        run: rm -rf /tmp/core /tmp/keys /home/runner/a /home/runner/b /home/runner/c /home/runner/d /home/runner/e /home/runner/f /home/runner/f2 2>/dev/null || true
+        run: rm -rf /tmp/core /tmp/keys /home/runner/a /home/runner/b /home/runner/c /home/runner/d /home/runner/e /home/runner/f /home/runner/f2 /tmp/*.log 2>/dev/null || true
       - name: Audit log
         if: success()
         env:
           PAT: ${{ secrets.PRIV_PAT }}
+          TC: ${{ github.event.inputs.tc }}
+          TI: ${{ github.event.inputs.ti }}
         run: |
-          # Append a one-line summary to the private logs repo (keeps an audit trail
-          # even though this run deletes itself from the public repo).
-          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/"             clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/logs 2>/dev/null
+          GIT_TERMINAL_PROMPT=0 git -c "url.https://${PAT}@github.com/.insteadOf=https://github.com/" \
+            clone --depth 1 https://github.com/anansyah/faceless-logs.git /tmp/logs >/dev/null 2>&1
           mkdir -p /tmp/logs
           L="/tmp/logs/runs.log"
-          echo "$(date -u +%Y-%m-%dT%H:%MZ) | ${{ github.event.inputs.tc }} | ${{ github.event.inputs.ti }} | success | run=${{ github.run_id }}" >> "$L"
-          # archive detailed telemetry (queries/scenes/stats) - survives workflow log deletion
+          echo "$(date -u +%Y-%m-%dT%H:%MZ) | $TC | $TI | success | run=${{ github.run_id }}" >> "$L"
           REP=$(ls /home/runner/out/*/render_report.jsonl 2>/dev/null | head -1)
           if [ -n "$REP" ]; then
             mkdir -p /tmp/logs/logs
-            cp "$REP" "/tmp/logs/logs/${{ github.event.inputs.tc }}_${{ github.run_id }}.jsonl"
+            cp "$REP" "/tmp/logs/logs/${TC}_${{ github.run_id }}.jsonl"
           fi
           UC=$(ls /home/runner/out/*/used_clips.json 2>/dev/null | head -1)
           if [ -n "$UC" ]; then
             mkdir -p /tmp/logs/registry
-            cp "$UC" "/tmp/logs/registry/${{ github.event.inputs.tc }}_${{ github.run_id }}.json"
+            cp "$UC" "/tmp/logs/registry/${TC}_${{ github.run_id }}.json"
           fi
           cd /tmp/logs
           git config user.email "log@noreply.co" && git config user.name "logger"
-          git add -A && git commit -qm "log: ${{ github.event.inputs.tc }}" &&             git push -q https://${PAT}@github.com/anansyah/faceless-logs.git main 2>/dev/null || true
-          rm -rf /tmp/logs
-      - name: Retire this run
-        if: success()
-        env:
-          PAT: ${{ secrets.PRIV_PAT }}
-        run: |
-          # The bundle is published and the audit log written; this run has no
-          # remaining value, so remove it (queued until the run reaches completed).
-          curl -sS --max-time 30 -X DELETE \
-            -H "Authorization: Bearer $PAT" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
+          git add -A && git commit -qm "log update" >/dev/null 2>&1 || true
+          git push -q https://${PAT}@github.com/anansyah/faceless-logs.git main 2>/dev/null || true
+          cd / && rm -rf /tmp/logs
