@@ -17,15 +17,11 @@ jobs:
           PAT: ${{ secrets.PRIV_PAT }}
         run: |
           KEEP=2
-          runs=$(curl -sS --max-time 30 \
+          ids=$(curl -sS --max-time 30 \
             -H "Authorization: Bearer ${PAT}" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100")
-          ids=$(echo "$runs" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-rs=[r for r in d.get('workflow_runs',[]) if r.get('status')=='completed']
-for r in rs[KEEP:]:
-    print(r['id'])")
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100" \
+            | jq -r '.workflow_runs[] | select(.status=="completed") | .id' \
+            | tail -n +$((KEEP+1)))
           for id in $ids; do
             curl -sS --max-time 30 -X DELETE \
               -H "Authorization: Bearer ${PAT}" \
